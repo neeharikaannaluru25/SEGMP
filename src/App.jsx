@@ -1,5 +1,8 @@
+
 import { useState } from 'react';
 import './App.css';
+
+const STORAGE_KEY = 'segmp_students';
 
 const subjects = [
   'Operating Systems',
@@ -15,6 +18,52 @@ const subjects = [
 ];
 
 const emptyMarks = subjects.map(() => '');
+
+function getStudents() {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    return stored ? JSON.parse(stored) : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveStudents(students) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(students));
+}
+
+function calculateGrade(mark) {
+  if (String(mark).toLowerCase() === 'ab') return 'F';
+
+  const value = Number(mark);
+
+  if (value >= 90) return 'S';
+  if (value >= 80) return 'A';
+  if (value >= 70) return 'B';
+  if (value >= 60) return 'C';
+  if (value >= 50) return 'D';
+  if (value >= 40) return 'E';
+  return 'F';
+}
+
+function calculateResult(mark) {
+  if (String(mark).toLowerCase() === 'ab') return 'Absent';
+  return Number(mark) >= 40 ? 'Pass' : 'Fail';
+}
+
+function calculateSGPA(marks) {
+  const numericMarks = marks
+    .filter((mark) => String(mark).toLowerCase() !== 'ab')
+    .map(Number);
+
+  if (numericMarks.length === 0) return null;
+
+  const average =
+    numericMarks.reduce((total, mark) => total + mark, 0) /
+    numericMarks.length;
+
+  return Number((average / 10).toFixed(2));
+}
 
 function App() {
   const [page, setPage] = useState('home');
@@ -58,31 +107,76 @@ function App() {
     setPage('enroll');
   }
 
-  async function submitForm(e) {
+  function submitForm(e) {
     e.preventDefault();
     if (loading) return;
 
     setMessage('');
+
+    const cleanedName = name.trim();
+    const cleanedRoll = rollNumber.trim().toUpperCase();
+
+    if (!/^[A-Za-z. ]+$/.test(cleanedName)) {
+      setMessage('Enter a valid student name.');
+      return;
+    }
+
+    if (!/^24HC\d{3}$/.test(cleanedRoll)) {
+      setMessage('Enter a valid roll number in the format 24HC001.');
+      return;
+    }
+
+    const cleanedMarks = marks.map((mark) => String(mark).trim());
+
+    const invalidMark = cleanedMarks.some((mark) => {
+      if (/^ab$/i.test(mark)) return false;
+      if (mark === '') return true;
+
+      const value = Number(mark);
+      return !Number.isFinite(value) || value < 0 || value > 100;
+    });
+
+    if (invalidMark) {
+      setMessage('Enter a mark between 0 and 100, or Ab for absent, for every subject.');
+      return;
+    }
+
     setLoading(true);
 
     try {
-      const response = await fetch('http://localhost:5000/api/enroll', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          password: '1234',
-          name,
-          rollNumber,
-          marks: marks.map((mark) => ({ marks: mark }))
-        })
-      });
+      const students = getStudents();
 
-      const data = await response.json();
-
-      if (!response.ok) {
-        setMessage(data.message || 'Unable to submit the form.');
+      if (students[cleanedRoll]) {
+        setMessage(
+          'This roll number is already enrolled. Please use a different roll number.'
+        );
         return;
       }
+
+      const normalizedMarks = cleanedMarks.map((mark) =>
+        /^ab$/i.test(mark) ? 'Ab' : Number(mark)
+      );
+
+      const resultSubjects = subjects.map((subject, index) => ({
+        id: index + 1,
+        subject_name: subject,
+        marks: normalizedMarks[index],
+        grade: calculateGrade(normalizedMarks[index]),
+        result: calculateResult(normalizedMarks[index])
+      }));
+
+      const record = {
+        student: {
+          name: cleanedName,
+          roll_number: cleanedRoll,
+          branch: 'Computer Science and Engineering'
+        },
+        subjects: resultSubjects,
+        sgpa: calculateSGPA(normalizedMarks)
+      };
+
+      students[cleanedRoll] = record;
+      saveStudents(students);
 
       setMessage('');
       setName('');
@@ -90,17 +184,18 @@ function App() {
       setMarks([...emptyMarks]);
       setShowSuccessModal(true);
     } catch {
-      setMessage('Cannot connect to the server. Please try again.');
+      setMessage('Unable to save the record in this browser. Please check browser storage.');
     } finally {
       setLoading(false);
     }
   }
 
-  async function searchResult(e) {
+  function searchResult(e) {
     e.preventDefault();
     if (searchLoading) return;
 
     const cleanedRoll = searchRoll.trim().toUpperCase();
+
     if (!/^24HC\d{3}$/.test(cleanedRoll)) {
       setMessage('Enter a valid roll number in the format 24HC001.');
       setStudentData(null);
@@ -112,20 +207,18 @@ function App() {
     setStudentData(null);
 
     try {
-      const response = await fetch(
-        `http://localhost:5000/api/results/${encodeURIComponent(cleanedRoll)}`
-      );
-      const data = await response.json();
+      const students = getStudents();
+      const record = students[cleanedRoll];
 
-      if (!response.ok) {
-        setMessage(data.message || 'No student record was found for this roll number.');
+      if (!record) {
+        setMessage('Roll Number Not Found. No student record exists for this roll number.');
         return;
       }
 
-      // Expected API response: { student, subjects, totalMarks, sgpa }
-      setStudentData(data);
+      setStudentData(record);
+      setSearchRoll(cleanedRoll);
     } catch {
-      setMessage('Cannot connect to the server. Please make sure the backend is running.');
+      setMessage('Unable to read student records from browser storage.');
     } finally {
       setSearchLoading(false);
     }
@@ -154,15 +247,13 @@ function App() {
   }
 
   function displayMark(mark) {
-  if (String(mark).toLowerCase() === 'ab') {
-    return 'Ab';
+    if (String(mark).toLowerCase() === 'ab') return 'Ab';
+    return Number(mark);
   }
-
-  return Number(mark);
-}
 
   const student = studentData?.student;
   const resultSubjects = studentData?.subjects || [];
+
   const overallResult = resultSubjects.some(
     (subject) =>
       String(subject.result || '').toLowerCase() === 'fail' ||
@@ -300,7 +391,11 @@ function App() {
 
               <div className="form-field full-width">
                 <label htmlFor="branch">Branch</label>
-                <input id="branch" value="Computer Science and Engineering" readOnly />
+                <input
+                  id="branch"
+                  value="Computer Science and Engineering"
+                  readOnly
+                />
               </div>
 
               <div className="form-section-title full-width">
@@ -314,7 +409,9 @@ function App() {
               {subjects.map((subject, index) => (
                 <div className="subject-row" key={subject}>
                   <label htmlFor={`subject-${index}`}>
-                    <span className="subject-number">{String(index + 1).padStart(2, '0')}</span>
+                    <span className="subject-number">
+                      {String(index + 1).padStart(2, '0')}
+                    </span>
                     {subject}
                   </label>
                   <input
@@ -376,7 +473,8 @@ function App() {
                     required
                   />
                   <button className="primary-button" type="submit" disabled={searchLoading}>
-                    {searchLoading ? 'Searching...' : 'View Result'} {!searchLoading && <span>→</span>}
+                    {searchLoading ? 'Searching...' : 'View Result'}
+                    {!searchLoading && <span>→</span>}
                   </button>
                 </form>
 
@@ -426,12 +524,18 @@ function App() {
                     <tbody>
                       {resultSubjects.map((subject, index) => {
                         const subjectResult = subject.result || (
-                          String(subject.marks).toLowerCase() === 'ab' ? 'Absent' :
-                          Number(subject.marks) < 40 ? 'Fail' : 'Pass'
+                          String(subject.marks).toLowerCase() === 'ab'
+                            ? 'Absent'
+                            : Number(subject.marks) < 40
+                              ? 'Fail'
+                              : 'Pass'
                         );
+
                         return (
                           <tr key={subject.id || subject.subject_name || index}>
-                            <td>{subject.subject_name || subject.subjectName || `Subject ${index + 1}`}</td>
+                            <td>
+                              {subject.subject_name || subject.subjectName || `Subject ${index + 1}`}
+                            </td>
                             <td>{displayMark(subject.marks)}</td>
                             <td>
                               <span className="grade-pill">{subject.grade || '—'}</span>
@@ -439,7 +543,9 @@ function App() {
                             <td>
                               <span
                                 className={`result-pill ${
-                                  String(subjectResult).toLowerCase() === 'pass' ? 'pass' : 'fail'
+                                  String(subjectResult).toLowerCase() === 'pass'
+                                    ? 'pass'
+                                    : 'fail'
                                 }`}
                               >
                                 {subjectResult}
@@ -455,7 +561,11 @@ function App() {
                 <div className="result-summary">
                   <div>
                     <span>SGPA</span>
-                    <strong>{studentData.sgpa === null || studentData.sgpa === undefined ? '—' : Number(studentData.sgpa).toFixed(2)}</strong>
+                    <strong>
+                      {studentData.sgpa === null || studentData.sgpa === undefined
+                        ? '—'
+                        : Number(studentData.sgpa).toFixed(2)}
+                    </strong>
                   </div>
                   <div>
                     <span>OVERALL RESULT</span>
